@@ -21,7 +21,7 @@ Design principles
 
 Recommended repository layout
 -----------------------------
-    data/processed/lnp_dc24_hacat_modeling_dataset.xlsx
+    data/processed/R1-4 all LNP normalized 1.35 (new).xlsx
     src/foundation_models/DC24_LNP_TabPFN_TabFM_GroupedCV_Publication.py
     scripts/run_DC24_foundation_benchmark_windows.py
     results/                         # generated; normally ignored by Git
@@ -29,7 +29,7 @@ Recommended repository layout
 Typical formal run
 ------------------
     python DC24_LNP_TabPFN_TabFM_GroupedCV_Publication.py \
-      --data-path data/processed/lnp_dc24_hacat_modeling_dataset.xlsx \
+      --data-path data/processed/R1-4 all LNP normalized 1.35 (new).xlsx \
       --outer-folds 5 --outer-repeats 3 --bootstrap-iterations 2000
 
 Quick validation without fitting remote/foundation models
@@ -285,8 +285,14 @@ RANDOM_STATE = 42
 np.random.seed(RANDOM_STATE)
 os.environ.setdefault("PYTHONHASHSEED", str(RANDOM_STATE))
 
-SCRIPT_VERSION = "2.0.5-publication-reproducible-safe-tree-merge"
-DEFAULT_FILE = "lnp_dc24_hacat_modeling_dataset.xlsx"
+SCRIPT_VERSION = "2.0.5-R1R4-exact-DC24-target-sheetfix"
+DEFAULT_FILE = "R1-4 all LNP normalized 1.35 (new).xlsx"
+
+# Direct-run default: same workbook and location used by the final R1-R4 tree-model code.
+# If this file is moved or shared, --data-path can still override this local default.
+DIRECT_DATA_PATH = Path(
+    r"C:\Users\ASUS\Desktop\AI screen LNP python and excel\PyCharm 有效代码\8.02 publish\R1-4 all LNP normalized 1.35 (new).xlsx"
+)
 
 EXTERNAL_RDKIT_INFO: Dict[str, str] = {}
 _RUN_LOG_HANDLE: Optional[Any] = None
@@ -311,10 +317,7 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
     "NP_ratio": ["N/P", "NP_ratio", "N_P_ratio", "N/P ratio"],
     "Round": ["Round", "round", "轮次"],
     "normalized_target": [
-        "normolized for DC2.4", "normalized for DC2.4",
-        "normolized for DC2_4", "normalized for DC2_4",
-        "normolized DC2.4", "normalized DC2.4",
-        "normolized", "normalized",
+        "Normalized for DC2.4",
     ],
     "same_log_target": [
         "in same log value", "same log value", "log value",
@@ -681,6 +684,13 @@ def find_existing_data_path(user_path: Optional[str]) -> str:
             + "\n".join(f"  - {candidate}" for candidate in candidates)
         )
 
+    # Local direct-run fallback used in the current R1-R4 project.
+    # This keeps the script runnable exactly like the final tree-model script.
+    if DIRECT_DATA_PATH.is_file():
+        resolved = DIRECT_DATA_PATH.resolve()
+        print(f"[DataPath] Using R1-R4 direct-run workbook: {resolved}")
+        return str(resolved)
+
     script_dir = Path(__file__).resolve().parent
     home = Path.home()
     nearby_dirs: List[Path] = [Path.cwd(), script_dir]
@@ -873,21 +883,21 @@ def attach_training_target(
     out = df.copy()
 
     if target_mode == "normalized":
-        source = find_column(original_df, COLUMN_ALIASES["normalized_target"])
-        if source is None:
+        required_target = "Normalized for DC2.4"
+        if required_target not in original_df.columns:
+            available = [str(c) for c in original_df.columns]
             raise ValueError(
-                "The normalized DC2.4 target column was not found. Expected one of: "
-                + ", ".join(COLUMN_ALIASES["normalized_target"])
-                + ". The publication pipeline intentionally does not fall back to a "
-                  "different response column."
+                "Required target column not found: "
+                f"{required_target!r}. "
+                "This R1-R4 benchmark is intentionally locked to this single "
+                "normalized DC2.4 response column and will not substitute any "
+                "other normalized/HaCaT/log-value column.\n"
+                "Available columns include:\n  - " + "\n  - ".join(available)
             )
-        if "hacat" in str(source).casefold():
-            raise ValueError(
-                f"Refusing to use HaCaT-labelled column '{source}' as the DC2.4 response."
-            )
+        source = required_target
         values = pd.to_numeric(original_df[source], errors="coerce")
         out["TE"] = values.values
-        label = str(source)
+        label = source
     elif target_mode == "log10_raw":
         if not raw_target_column:
             raise ValueError("--raw-target-column is required with --target-mode log10_raw.")
@@ -2740,7 +2750,7 @@ def parse_args() -> argparse.Namespace:
             "Desktop/OneDrive, and data/processed."
         ),
     )
-    parser.add_argument("--sheet-name", default="0", help="Sheet name or zero-based index.")
+    parser.add_argument("--sheet-name", default="Round1&2&3&4", help="Sheet name or zero-based index.")
     parser.add_argument("--output-dir", default="", help="Output directory.")
     parser.add_argument(
         "--tree-summary-path",
@@ -2843,6 +2853,91 @@ def parse_args() -> argparse.Namespace:
         help="Do not attempt the one-time wheel-only RDKit repair.",
     )
     return parser.parse_args()
+
+
+
+def _sheet_match_key(name: Any) -> str:
+    """Normalize worksheet names for safe matching (ignore whitespace/case)."""
+    return re.sub(r"\s+", "", str(name)).casefold()
+
+
+def _sheet_base_key(name: Any) -> str:
+    """
+    Relaxed worksheet key that also ignores a trailing copy suffix such as
+    '(2)', '(3)', etc.
+    """
+    key = _sheet_match_key(name)
+    return re.sub(r"\(\d+\)$", "", key)
+
+
+def resolve_training_sheet_name(workbook_path: str, requested: Any) -> Any:
+    """
+    Resolve the intended R1-R4 worksheet safely.
+
+    Priority:
+    1. exact match;
+    2. whitespace/case-insensitive match;
+    3. same base name ignoring a trailing '(2)'/'(3)' suffix;
+    4. if exactly one Round1&2&3&4-family sheet exists, use it.
+
+    If the workbook is still ambiguous, print all real worksheet names and stop.
+    """
+    if isinstance(requested, int):
+        return requested
+
+    req_text = str(requested)
+    if req_text.isdigit():
+        return int(req_text)
+
+    xls = pd.ExcelFile(workbook_path)
+    sheets = list(xls.sheet_names)
+
+    # 1) Exact match.
+    if req_text in sheets:
+        print(f"[SheetCheck] Exact sheet matched: {req_text!r}")
+        return req_text
+
+    # 2) Ignore whitespace/case.
+    req_key = _sheet_match_key(req_text)
+    matches = [s for s in sheets if _sheet_match_key(s) == req_key]
+    if len(matches) == 1:
+        print(
+            f"[SheetCheck] Auto-matched sheet by whitespace/case: "
+            f"{req_text!r} -> {matches[0]!r}"
+        )
+        return matches[0]
+
+    # 3) Ignore trailing (2)/(3)/...
+    req_base = _sheet_base_key(req_text)
+    matches = [s for s in sheets if _sheet_base_key(s) == req_base]
+    if len(matches) == 1:
+        print(
+            f"[SheetCheck] Auto-matched sheet family: "
+            f"{req_text!r} -> {matches[0]!r}"
+        )
+        return matches[0]
+
+    # 4) Find a unique R1-R4 sheet family.
+    wanted_family = "round1&2&3&4"
+    family = [s for s in sheets if _sheet_base_key(s).startswith(wanted_family)]
+    if len(family) == 1:
+        print(
+            "[SheetCheck] Requested sheet name was absent, but exactly one "
+            f"R1-R4 sheet was found: {family[0]!r}"
+        )
+        return family[0]
+
+    print("\n" + "=" * 88)
+    print("[SheetError] Excel file was found, but the R1-R4 worksheet could not be resolved uniquely.")
+    print(f"[SheetError] Requested: {req_text!r}")
+    print("[SheetError] Actual worksheet names:")
+    for sheet in sheets:
+        print("  -", repr(sheet))
+    print("=" * 88)
+    raise ValueError(
+        "Could not uniquely resolve the R1-R4 worksheet. "
+        "See the printed worksheet names above."
+    )
 
 
 def parse_sheet_argument(value: Any) -> Any:
@@ -3077,7 +3172,10 @@ def main() -> None:
         f"iterations | seed={args.bootstrap_seed}"
     )
 
-    original = pd.read_excel(data_path, sheet_name=parse_sheet_argument(args.sheet_name))
+    requested_sheet = parse_sheet_argument(args.sheet_name)
+    training_sheet = resolve_training_sheet_name(data_path, requested_sheet)
+    print(f"[Sheet] Using worksheet: {training_sheet!r}")
+    original = pd.read_excel(data_path, sheet_name=training_sheet)
     standardized, source_columns = standardize_formulation_columns(original)
     standardized, target_label = attach_training_target(
         standardized, original, args.target_mode, args.raw_target_column,
