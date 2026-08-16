@@ -1,268 +1,380 @@
-AI-Driven LNP Formulation Optimization — Algorithm & Reproducibility README
-Purpose: This document describes the computational strategy, algorithms, and software implementation used across four rounds of lipid nanoparticle (LNP) formulation optimization. A reader with basic Python experience should be able to reproduce the full pipeline from scratch.
+# Iterative LNP Formulation Design
 
-Overview
-This project uses an iterative active learning framework to optimize LNP transfection efficiency in DC2.4 dendritic cells. Rather than exhaustively screening all possible formulations, a machine learning surrogate model (TabPFN) is trained on experimental data after each round, then used to predict and prioritize the next batch of candidates — dramatically reducing the number of wet-lab experiments required.
-Total experimental budget: ~135 formulations across 4 rounds
-Estimated efficiency gain: ~3× vs. random screening at equivalent sample size
-Primary readout: DC2.4 cell transfection efficiency (RLU), normalized within each plate
-Secondary readout (Round 4 onwards): HaCaT cell transfection efficiency
+## Purpose
 
-Formulation Space Definition
-Each LNP formulation is defined by the following variables:
-Variable	Type	Range / Options
-Ionizable Lipid 1 (IL1)	Categorical	MC3, ALC-0315, SM102, C12-200, CCK12 (CKK-E12), DOTAP, DODAP
-IL1 mol%	Continuous	5–55%
-Ionizable Lipid 2 (IL2)	Categorical	Same palette as IL1
-IL2 mol%	Continuous	5–55%
-Total Ionizable Lipid (TIL)	Continuous	20–67% (IL1 + IL2)
-Phospholipid	Categorical	DOPE, DSPC
-Phospholipid mol%	Continuous	5–50%
-Cholesterol mol%	Continuous	0–58%
-PEG Lipid	Categorical	DMG-PEG2000, C14-PEG, PEG-Mannose
-PEG mol%	Continuous	1.0–4.0%
-Constraint	Mixture	All components sum to ~100 mol%
+This document describes **how formulations were selected across R1–R4** in the small-sample iterative LNP optimization study.
 
+The focus of this file is the **experimental-design logic**:
 
-Round-by-Round Algorithm Description
-Round 1 — D-Optimal Global Coverage (n = 36)
-Algorithm: D-Optimal experimental design
-Goal: Identify parameter boundaries; establish initial training set with maximum information content
-D-Optimal design selects the set of experimental points that maximizes the determinant of the Fisher information matrix det(XTX). This is preferred over pure random sampling or Latin Hypercube Sampling (LHS) because the formulation space contains a mixture of categorical variables (lipid identity, PEG type) and mixture-constrained continuous variables (mol% sum ≈ 100%), which LHS does not handle efficiently.
-Key outputs from Round 1:
-SM102 identified as core active ionizable lipid
-DOPE identified as superior phospholipid vs. DSPC
-Initial signal: SM102+SM102 (R1-17) and ALC-0315+SM102 (R1-26) show highest normalized efficiency
-Design tool: manual D-optimal grid construction
-Constraints enforced: component sum ≈ 100 mol%
-Coverage: all 7 IL types represented in pairwise combinations
+- how the initial formulation space was explored;
+- how experimental feedback was used to refine later rounds;
+- how high-response regions were studied in greater detail without abandoning broader exploration;
+- how R4 combined exploitation, exploration, and calibration/validation;
+- how the completed R1–R4 dataset was separated from the planned prospective validation stage.
 
+Detailed model training, feature engineering, grouped nested cross-validation, Morgan fingerprints, mRMR feature selection, and model benchmarking are documented separately in the publication modeling README.
 
-Round 2 — Semi-Focused Space Expansion (n = 40–45)
-Algorithm: Directed combinatorial expansion (human-in-the-loop)
-Goal: Introduce new chemical components; explore concentration gradients systematically
-Round 2 is not a local perturbation of Round 1. It introduces previously untested components:
-New ionizable lipid: CCK12 (CKK-E12)
-New PEG variants: PEG-Mannose, C14-PEG
-Concentration gradients systematically swept:
-DOPE: 5%, 15%, 25%, 35%, 50%
-Cholesterol: 0%, 12.5%, 19.25%, 25.5%, 32%, 38.5%
-Total IL ratio: 20–67%
-Key outputs from Round 2:
-CCK12+SM102 and C12-200+SM102 confirmed as dominant IL combinations
-DOPE 15% identified as a "sweet spot" (mean normalized efficiency 0.871 vs. 0.148 at 5%)
-DMG-PEG2000 confirmed as optimal PEG type
-Top 8 formulations all have PDI ≤ 0.4 and particle size ≤ 200 nm
+---
 
-Round 3 — TabPFN Active Learning, Modular Optimization (n = 26)
-Algorithm: TabPFN surrogate model + UCB acquisition function
-Training data: R1 + R2 combined (n = 81)
-Why TabPFN?
-TabPFN (Tabular Prior-Data Fitted Networks) is a transformer-based model pre-trained on synthetic tabular datasets, enabling strong few-shot regression without hyperparameter tuning. At n ≈ 81 training points across ~10 features, TabPFN achieves R² ≈ 0.65 and Spearman ρ ≈ 0.81 — outperforming CatBoost and Random Forest at this sample size.
-Active Learning Loop
-1. Train TabPFN on all available data (R1 + R2)
-2. Generate candidate pool (~3,000 formulations, grid over parameter space)
-3. Predict mean and uncertainty for each candidate
-4. Score candidates by UCB = μ_predicted + β × σ_predicted  (β = 0.5)
-5. Select top candidates, organize into functional modules
-6. Run experiments, add results to training set → repeat
+## 1. Study Design Overview
 
-The UCB acquisition function balances exploitation (high predicted efficiency) with exploration (high model uncertainty), preventing premature convergence to a local optimum.
-Round 3 Module Structure
-Module	n	Focus	Rationale
-A: CCK12+SM102	8	IL ratio gradient × 2 DOPE concentrations	Systematic optimization of top combo
-B: C12-200+SM102	6	Dense sampling near R2-19 and R2-28	Exploit two high-scoring (>0.98) anchors
-C: SM102+ALC-0315	5	Ratio exploration	R2-22 (0.955) shows unexploited potential
-D: SM102 high-conc	4	Validation of high-TIL regime	R2-41 result (1.0) needs confirmation
-E: Replicates	3	Reproduce R2-17, R2-28, R2-22	Reproducibility required for publication
+The primary optimization task was **mRNA-LNP transfection in DC2.4 dendritic cells**.
 
-Key outputs from Round 3:
-R3-11 (C12-200+SM102, norm = 1.00) confirmed as all-time best DC formulation
-DOPE 15% effect validated across multiple IL combinations
-C12-200+SM102 family robustly outperforms at Chol 28–38.5%, DOPE 35%
+The overall workflow followed one continuous iterative cycle:
 
-Round 4 — RSM Exploitation + D-Optimal Exploration + Validation (n = 30)
-Algorithm: Three-block structured design (A: RSM / B: D-Optimal / C: Validate)
-Training data: R1 + R2 + R3 combined (n ≈ 107), augmented with lance external dataset (n = 3,573, same DC cell line) via RankTransfer
-Block Structure
-Block A — Exploit (n = 12): Face-centered RSM
-Response Surface Methodology sweep around the champion formulation (C12-200+SM102):
-IL1:IL2 ratio sweep: 70:30 → 30:70 (5 points)
-DOPE mol% sweep: 10%, 15%, 20%, 40%
-Cholesterol fine sweep: 29.5%, 38.5%, 45%
-CKK-E12/SM102 mirror formulation
-Block B — Explore (n = 12): D-Optimal / Maximin space-filling
-Greedy maximin algorithm seeded with two high-performing lance dataset regimes:
-Regime i: high cholesterol (~47%), low PEG (~1%)
-Regime ii: high phospholipid (~50%), low cholesterol (~12.5%)
-Each new point is chosen to maximize the minimum distance to all existing points in the normalized feature space, ensuring maximum information gain in undersampled regions.
-Block C — Validate (n = 6): Reproducibility and transfer
-Replicates of R3-11 (best DC) and R3-09 (2nd best)
-Transfer of lance global champion onto local lipid palette
-Best CKK-E12 arm replicate
-One boundary/extrapolation probe (model-disagreement point)
-Key Finding from Round 4
-DC2.4 and HaCaT cells show divergent responses to C12-200:SM102 ratio (Spearman ρ = 0.199, p = 0.30):
-DC2.4 favors high C12-200 fraction (70:30 ratio)
-HaCaT favors high SM102 fraction (30:70 ratio)
-This demonstrates a cell-type-selective formulation window — a key mechanistic finding supporting DC-targeted LNP design.
+**formulation design → DC2.4 transfection testing → model updating → candidate selection → next-round design**
 
-Software Implementation
-Installation
-pip install tabpfn scikit-learn pandas numpy openpyxl scipy
+R1 was used mainly for broad exploration of the formulation space. In subsequent rounds, experimental results and interim model predictions were used to increase sampling density in promising regions while retaining a degree of broader exploration.
 
-For GPU acceleration (optional):
-pip install tabpfn[gpu]
+The goal was not simply to increase sample number, but to make each new round more informative for the target task.
 
-Required Python Version
-Python ≥ 3.8 recommended. Tested on 3.9 and 3.10.
-Core Dependencies
-Package	Version	Purpose
-tabpfn	≥ 0.1.9	Surrogate regression model
-scikit-learn	≥ 1.0	Label encoding, cross-validation
-pandas	≥ 1.3	Data loading and manipulation
-numpy	≥ 1.21	Numerical operations, UCB scoring
-openpyxl	≥ 3.0	Excel file I/O
-scipy	≥ 1.7	Spearman correlation, statistical tests
+### Primary readout
 
+- DC2.4 transfection efficiency
+- normalized across experimental plates before cross-round modeling
 
-Feature Engineering
-Each formulation is encoded as a 13-dimensional feature vector:
-feature_cols = [
-    'IL1_encoded',              # LabelEncoded categorical
-    'IL1_Mol_Percent',          # continuous
-    'IL2_encoded',              # LabelEncoded categorical
-    'IL2_Mol_Percent',          # continuous
-    'Phospholipid_encoded',     # LabelEncoded categorical
-    'Phospholipid_Mol_Percent', # continuous
-    'Cholesterol_Mol_Percent',  # continuous
-    'PEG_encoded',              # LabelEncoded categorical
-    'PEG_Mol_Percent',          # continuous
-    'Total_IL_Mol_Ratio',       # continuous (IL1% + IL2%)
-    'IL_ratio',                 # IL1% / (IL2% + 0.01)
-    'DOPE_flag',                # binary (1 if DOPE, 0 if DSPC)
-    'Chol_DOPE_interact',       # Cholesterol_Mol_Percent × DOPE_flag
-]
+### Secondary biological-context readout
 
-Label encoders are fit on the full lipid/PEG palette (all 7 ILs, 2 phospholipids, 3 PEG types) before splitting train/test, ensuring consistent encoding across rounds.
+- HaCaT keratinocyte transfection efficiency
+- analyzed as a secondary biological context rather than as the optimization target of the primary DC2.4 model
 
-TabPFN Training
-from tabpfn import TabPFNRegressor
+### Final modeling dataset
 
-model = TabPFNRegressor(device='cpu', n_estimators=16)
-model.fit(X_train, y_train)  # y = normalized DC transfection efficiency
+After data cleaning and QC, **104 experimentally tested formulations from R1–R4** were retained for final systematic modeling.
 
-Notes:
-TabPFN requires n_samples ≤ 1024 and n_features ≤ 100; both constraints are satisfied here
-No hyperparameter tuning needed — this is the primary advantage for small-n settings
-Use device='cuda' if a GPU is available for faster inference over large candidate pools
+The number of formulations originally designed or experimentally prepared in individual rounds can be larger than the final retained count because replicate, calibration, template, and QC-excluded rows are not all included in the final modeling dataset.
 
-UCB Active Learning Selection
-def ucb_select(model, candidates_df, n_select=15, beta=0.5):
-    X_cand = prepare_features(candidates_df)
-    
-    # Estimate uncertainty via ensemble predictions
-    pred_list = [model.predict(X_cand) for _ in range(10)]
-    pred_mean = np.mean(pred_list, axis=0)
-    pred_std  = np.std(pred_list, axis=0)
-    
-    # UCB score
-    ucb = pred_mean + beta * pred_std
-    
-    candidates_df['pred_mean'] = pred_mean
-    candidates_df['pred_std']  = pred_std
-    candidates_df['ucb_score'] = ucb
-    
-    return candidates_df.nlargest(n_select, 'ucb_score')
+---
 
-Parameter guidance:
-beta = 0.5 balances exploitation vs. exploration (increase to explore more aggressively)
-n_estimators = 10 for uncertainty estimation is sufficient; increase for stability
+## 2. Formulation Space
 
-Candidate Pool Generation
-def generate_candidates():
-    """
-    Generate ~3,000 candidate formulations satisfying:
-    - Component sum = 100 mol% (±2%)
-    - PEG: 1.0–4.0%
-    - Total IL: 20–67%
-    - Phospholipid: 5–50%
-    - Cholesterol: 0–58%
-    """
-    lipid_combos = [('CCK12','SM102'), ('C12-200','SM102'),
-                    ('SM102','ALC-0315'), ('C12-200','CCK12')]
-    
-    il_ratios       = [(28,12),(24,16),(20,20),(16,24),(12,28),(8,17),(10,20)]
-    phospho_configs = [('DOPE',15), ('DOPE',25), ('DOPE',35)]
-    chol_levels     = [19.25, 25.5, 32.0, 38.5]
-    peg_configs     = [('DMG-PEG2000',1.5), ('DMG-PEG2000',2.5), ('PEG-Mannose',1.5)]
-    
-    candidates = []
-    for il1, il2 in lipid_combos:
-        for il1p, il2p in il_ratios:
-            for pl, plp in phospho_configs:
-                for chol in chol_levels:
-                    for peg, pegp in peg_configs:
-                        total = il1p + il2p + plp + chol + pegp
-                        if 98 <= total <= 102:
-                            candidates.append({...})
-    return pd.DataFrame(candidates)
+Each LNP formulation was defined by a combination of categorical and continuous variables.
 
+| Variable | Type | Range / options |
+|---|---|---|
+| Ionizable lipid 1 (IL1) | Categorical | MC3, ALC-0315, SM102, C12-200, CKK-E12, DOTAP, DODAP |
+| IL1 mol% | Continuous | formulation-dependent |
+| Ionizable lipid 2 (IL2) | Categorical | same lipid palette |
+| IL2 mol% | Continuous | formulation-dependent |
+| Total ionizable lipid | Continuous | IL1 + IL2 |
+| Helper phospholipid | Categorical | DOPE, DSPC |
+| Helper-lipid mol% | Continuous | formulation-dependent |
+| Cholesterol mol% | Continuous | formulation-dependent |
+| PEG lipid | Categorical | DMG-PEG2000, C14-PEG, PEG-Mannose |
+| PEG mol% | Continuous | formulation-dependent |
+| Mixture constraint | Constraint | total lipid components approximately sum to 100 mol% |
 
-Inter-Plate Normalization (Critical)
-Raw RLU values cannot be compared directly across rounds due to inter-plate variability. Normalize within each plate before cross-round analysis:
-# Within each experimental plate:
-df['log_TE'] = np.log10(df['DC_Transfection_Efficiency'].clip(lower=1))
-plate_max     = df['log_TE'].max()
-plate_min     = df['log_TE'].min()  # theoretical minimum (log of lowest observed)
-df['normalized_TE'] = (df['log_TE'] - plate_min) / (plate_max - plate_min)
+Publicly available LNP studies were used as **references for lipid selection and approximate formulation ranges**, rather than as direct training data for the target-specific DC2.4 model.
 
-Evidence for necessity: Replicates of R3-11 (raw RLU ~156,000 in Round 3) measured ~5,300 in Round 4 — a 30× difference attributable entirely to inter-plate variation. All cross-round comparisons in this study use normalized values.
+Specific formulation combinations and ratios were generated within the in-house experimental design and were experimentally tested in the DC2.4 system.
 
-Reproducing the Full Pipeline
-Step 1: Install dependencies
-        pip install tabpfn scikit-learn pandas numpy openpyxl scipy
+---
 
-Step 2: Load and merge data from all rounds
-        → Use All-100-DATA-in-same-log-value.xlsx (R1–R3)
-        → Use 4rd-round-LNP_Design_Batch_30.xlsx (R4)
+## 3. Round 1 — Broad Exploration
 
-Step 3: Apply inter-plate normalization (see above)
+### Role
 
-Step 4: Run feature engineering (LabelEncode categoricals, add interaction terms)
+**Establish broad initial coverage of the formulation space and generate the first target-specific training data.**
 
-Step 5: Train TabPFN on all available normalized data
+R1 was designed under a **design-of-experiments (DoE) framework with Latin hypercube sampling (LHS)-style broad coverage**.
 
-Step 6: Generate candidate pool (~3,000 formulations)
+The purpose was not to immediately identify a single optimum. Instead, R1 was used to sample different regions of the formulation space and establish an initial relationship between formulation composition and DC2.4 transfection efficiency.
 
-Step 7: Run UCB active learning selection (beta=0.5, n_select=15–30)
+### Design priorities
 
-Step 8: Organize selected candidates into Exploit / Explore / Validate blocks
-        → ~50–60% Exploit (RSM around current champion)
-        → ~30–40% Explore (D-optimal / maximin space-filling)
-        → ~10–15% Validate (replicates of top candidates)
+- represent multiple ionizable-lipid identities and combinations;
+- cover a broad range of component ratios;
+- include different helper-lipid and PEG-lipid conditions;
+- avoid concentrating all experiments in a narrow region before any target-specific response data were available;
+- generate an initial dataset suitable for subsequent model fitting.
 
-Step 9: Run experiments, collect data, return to Step 2
+### Role in the iterative strategy
 
+R1 can be viewed as the **initial set of sparse survey points** used to begin learning the DC2.4 formulation-response landscape.
 
-Data Files
-File	Contents	Rounds
-All-100-DATA-in-same-log-value.xlsx	All formulations + DC transfection + physicochemical data	R1, R2, R3
-4rd-round-LNP_Design_Batch_30.xlsx	30 formulations with DC + HaCaT readouts + design rationale	R4
-Fu-Ben-LNP_Round3_Shi-Yan-She-Ji-_TabPFNCe-Lue-_5.xlsx	Round 3 design rationale, TabPFN code template, weighing calculations	R3 design
-Round4_Recommendations.csv	Computer-generated Round 4 candidate list	R4 pre-experiment
+---
 
+## 4. Round 2 — Model-Informed Space Expansion
 
-Experimental Constraints (Wet-Lab Ready Formulations Only)
-All algorithmically generated candidates are filtered to ensure wet-lab feasibility:
-Component sum: 98–102 mol%
-PEG lipid: 1.0–4.0 mol%
-Total ionizable lipid: 20–67 mol%
-Phospholipid: 5–50 mol%
-Cholesterol: 0–58 mol%
-Particle size target: < 200 nm (PDI < 0.4 preferred)
-Lipid palette restricted to reagents available in-house
+### Role
 
-Citation
-If using this pipeline, please cite the original LNP dataset (lance, n = 3,573) used as prior knowledge for RankTransfer and surrogate model initialization, and the TabPFN paper:
-Hollmann, N., Müller, S., Eggensperger, K., & Hutter, F. (2022). TabPFN: A Transformer That Solves Small Tabular Classification Problems in a Second. ICLR 2023.
+**Expand the formulation space using information learned from R1 while introducing additional formulation diversity.**
+
+R2 was not simply a local replication of the best R1 formulations. It expanded the design by introducing additional lipid combinations and formulation conditions while increasing attention to regions that showed promising DC2.4 responses.
+
+New formulation elements included, where experimentally applicable:
+
+- CKK-E12-containing formulations;
+- additional PEG-lipid variants such as PEG-Mannose and C14-PEG;
+- systematic variation of ionizable-lipid ratios;
+- helper-lipid, cholesterol, and PEG composition changes.
+
+### Design logic
+
+R2 combined two objectives:
+
+1. **refinement** of regions that appeared promising from R1;
+2. **continued exploration** of formulation combinations that remained insufficiently sampled.
+
+The new experimental results were then returned to the modeling workflow for the next round.
+
+---
+
+## 5. Round 3 — Focused Refinement of High-Response Regions
+
+### Role
+
+**Increase local information density around promising formulation families while preserving selected exploratory and reproducibility samples.**
+
+By R3, the accumulated R1–R2 dataset allowed the optimization process to move from primarily broad exploration toward more focused candidate selection.
+
+Interim machine-learning models were used as decision-support tools together with the experimental results to identify formulation families and parameter ranges requiring further study.
+
+### Main design questions
+
+R3 was designed to ask:
+
+- Which ionizable-lipid combinations consistently occupy high-response regions?
+- How sensitive is transfection efficiency to IL1/IL2 ratio changes?
+- Are promising responses robust to helper-lipid and cholesterol changes?
+- Do high-performing formulations reproduce across experimental rounds?
+- Which local formulation changes cause large decreases or increases in DC2.4 transfection?
+
+### Candidate roles
+
+R3 therefore included a mixture of:
+
+- high-response-region refinement;
+- local ratio and composition scans;
+- selected broader probes;
+- historical/technical replicates for reproducibility.
+
+The purpose was to learn the **shape of the local high-response region**, rather than merely to reproduce one previously successful point.
+
+---
+
+## 6. Round 4 — Information-Rich Adaptive Refinement
+
+### Role
+
+**Use the knowledge accumulated from R1–R3 to perform targeted local refinement, broader boundary exploration, and calibration/validation within the same experimental round.**
+
+R4 was not designed as a completely independent external test set. Instead, it was an **adaptive information-gathering round** whose results were later incorporated into the final R1–R4 model.
+
+The R4 candidates were organized conceptually into three complementary roles.
+
+### 6.1 Exploit — Refine High-Response Regions
+
+The Exploit subset focused on formulation families that had already shown relatively high DC2.4 transfection efficiency.
+
+Rather than repeating a single high-performing formulation, nearby formulation variables were varied to learn the local response landscape in more detail.
+
+Variables examined included:
+
+- IL1/IL2 identity and relative ratio;
+- total ionizable-lipid content;
+- helper-lipid fraction;
+- cholesterol fraction;
+- PEG-lipid composition and fraction.
+
+Particular attention was given to promising dual-ionizable-lipid regions, including **C12-200/SM102** and **CKK-E12/SM102** families.
+
+#### Scientific purpose
+
+The goal was to determine whether a high-response formulation represented:
+
+- a narrow isolated peak;
+- a broader high-performance plateau;
+- or a region highly sensitive to small changes in composition.
+
+This subset therefore provided detailed local information around promising regions rather than simply maximizing the number of high predicted values.
+
+### 6.2 Explore — Sample Underrepresented and Boundary Regions
+
+The Explore subset retained broader coverage of the formulation space.
+
+These formulations were chosen from regions that were less represented in the existing R1–R3 dataset, including composition boundaries and combinations outside the densest high-response region.
+
+Explore candidates were **not required to have the highest predicted transfection efficiency**.
+
+Their purpose was to provide informative examples that help define:
+
+- low-response regions;
+- formulation-space boundaries;
+- feasible versus unstable formulation regions;
+- composition regions with limited existing experimental support;
+- areas in which model behavior required additional experimental information.
+
+Low-performing results were therefore not considered failed experiments; they could still provide valuable information about the boundaries and structure of the formulation-response landscape.
+
+### 6.3 Validate / Calibration — Historical Anchors and Transfer-Oriented Probes
+
+A third subset was included for calibration and targeted validation.
+
+This subset contained:
+
+- replicate formulations derived from previously high-performing R3 formulations;
+- selected CKK-E12-containing validation formulations;
+- formulations inspired by high-performing regimes reported in external/public LNP studies;
+- at least one boundary or model-disagreement probe.
+
+Historical replicate formulations were used to monitor reproducibility and cross-round experimental shifts.
+
+External/public LNP information was **not directly merged into the target-specific DC2.4 training dataset** for R4. Instead, public studies were used as prior references for candidate design and to test whether selected formulation ideas could transfer to the local experimental system.
+
+---
+
+## 7. Interpretation of R4
+
+R4 should therefore be interpreted as an **adaptive refinement round**, not as a single homogeneous test set.
+
+Its subsets answered different questions:
+
+| R4 role | Main question |
+|---|---|
+| Exploit | What does the high-response region look like in greater local detail? |
+| Explore | What can be learned from under-sampled, boundary, or lower-response regions? |
+| Validate / Calibration | Are historical responses reproducible, are there cross-round shifts, and can selected external formulation ideas transfer? |
+
+After QC, **20 R4 observations were retained** and incorporated into the final **104-formulation R1–R4 dataset**.
+
+Because R4 contributes to final model refinement and training, it is **not treated as the final prospective external validation set**.
+
+---
+
+## 8. Final Systematic Modeling After R1–R4
+
+After all R1–R4 experimental data had been collected, the accumulated 104-formulation dataset was used for final systematic model development and evaluation.
+
+At this stage, the publication modeling pipeline incorporated:
+
+- core formulation variables;
+- ionizable-lipid structural descriptors;
+- 128-bit Morgan molecular fingerprints generated from SMILES;
+- IL1/IL2-weighted structural features for dual-ionizable-lipid formulations;
+- fold-safe auxiliary feature selection using mutual information and mRMR;
+- grouped nested cross-validation;
+- comparison of multiple regression models.
+
+These final retrospective modeling procedures were performed **after completion of the R1–R4 experimental acquisition process** and should not be interpreted as a separate experimental-design loop.
+
+Detailed implementation is documented in the modeling README.
+
+---
+
+## 9. Public-Data / Meta-Learning Benchmark
+
+Public LNP datasets were evaluated separately as a transfer-learning/meta-learning benchmark.
+
+This analysis was designed to answer a different question:
+
+> Can models trained on heterogeneous public LNP data transfer reliably to the in-house DC2.4 mRNA-LNP task?
+
+The public-data benchmark is therefore a **comparison analysis**, not part of the target-specific R1–R4 training dataset.
+
+Detailed MetaLNP-style benchmark methods and results are documented separately in the supporting analysis files.
+
+---
+
+## 10. Prospective Validation — Planned
+
+The final prospective validation will be performed **after the R1–R4 model and preprocessing pipeline are frozen**.
+
+Approximately **10–15 previously untested formulations** will be selected to span different predicted-response regions, including:
+
+- predicted high-performing candidates;
+- intermediate predicted candidates;
+- predicted low-performing controls;
+- a limited number of exploratory, boundary, or model-disagreement candidates.
+
+Predictions and candidate rankings will be saved before wet-lab testing.
+
+The prospective experiment is intended to evaluate whether the final model can **predict and prioritize genuinely unseen LNP formulations**, rather than only reproduce patterns already present in the retrospective R1–R4 dataset.
+
+Candidate performance will be evaluated using complementary metrics such as:
+
+- predicted-versus-measured agreement;
+- Spearman rank correlation;
+- RMSE/MAE when directly comparable;
+- high-performer recall;
+- Top-k hit rate or enrichment.
+
+The success criterion is **reliable prediction and ranking of unseen formulations**, not necessarily discovery of a formulation exceeding every historical maximum.
+
+---
+
+## 11. Wet-Lab Feasibility Constraints
+
+Candidate formulations must remain experimentally feasible.
+
+Typical constraints include:
+
+- lipid components approximately sum to 100 mol%;
+- PEG-lipid fraction remains within the experimentally supported range;
+- total ionizable-lipid fraction remains within the explored range;
+- helper-lipid and cholesterol fractions remain compatible with formulation preparation;
+- candidate lipids are restricted to reagents available in-house;
+- particle size and PDI are evaluated as QC criteria before inclusion in modeling.
+
+Exact QC thresholds and preprocessing rules are defined in the publication modeling pipeline.
+
+---
+
+## 12. Conceptual Summary
+
+The experimental strategy can be summarized as:
+
+```text
+Prior formulation knowledge
+        ↓
+R1 — Broad exploration
+        ↓
+Experimental feedback + model learning
+        ↓
+R2 — Space expansion + early refinement
+        ↓
+Experimental feedback + model updating
+        ↓
+R3 — Focused refinement of high-response regions
+        ↓
+Experimental feedback + model updating
+        ↓
+R4 — Exploit + Explore + Validate/Calibration
+        ↓
+Final R1–R4 model (104 QC-passed formulations)
+        ↓
+Freeze model and preprocessing
+        ↓
+Prospective prediction of 10–15 unseen formulations
+        ↓
+Experimental validation
+```
+
+Conceptually, the successive rounds are analogous to placing sparse experimental **survey points** in an initially uncertain formulation landscape. Each round adds information that makes the response landscape clearer, allowing later experiments to be placed more deliberately while still preserving exploration of poorly characterized regions.
+
+---
+
+## 13. Relationship to Other Repository Documentation
+
+This file documents **experimental formulation selection and round-by-round design logic**.
+
+It should not duplicate the full modeling README.
+
+Recommended documentation structure:
+
+```text
+README.md
+└── project overview and links
+
+docs/
+├── experimental_design/
+│   └── iterative_formulation_design.md   ← this file
+│
+└── modeling/
+    └── publication_modeling_README.md    ← model training, features, CV, metrics
+
+results/
+└── model outputs, figures, and prospective-validation results
+```
+
+This separation keeps the repository reproducible while making it clear which decisions belong to **experimental design** and which belong to **final statistical/model evaluation**.
